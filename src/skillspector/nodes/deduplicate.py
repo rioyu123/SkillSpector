@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 from skillspector.logging_config import get_logger
@@ -49,9 +50,40 @@ def _finding_source_scope(finding: Finding) -> str:
     return ""
 
 
+def _report_metadata_key(finding: Finding) -> tuple[object, ...]:
+    """Return the local report semantics that compacted occurrences must share.
+
+    Occurrence expansion reuses one representative finding's report fields.
+    Keeping those fields in the compaction identity prevents a benign-context
+    match and an unsafe match with the same rule fingerprint from inheriting
+    each other's classification or evidence. Confidence is intentionally not
+    included because compaction retains the group's highest-confidence value.
+    """
+    evidence = json.dumps(
+        finding.evidence,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return (
+        finding.message,
+        finding.severity,
+        finding.category,
+        finding.pattern,
+        finding.finding,
+        finding.explanation,
+        finding.remediation,
+        finding.code_snippet,
+        finding.context,
+        finding.intent,
+        tuple(finding.tags),
+        evidence,
+    )
+
+
 def deduplicate(findings: list[Finding]) -> list[Finding]:
-    """Aggregate exact full-match duplicates while preserving every occurrence."""
-    groups: dict[tuple[str, str, str], list[Finding]] = {}
+    """Aggregate report-equivalent exact matches while preserving occurrences."""
+    groups: dict[tuple[str, str, str, tuple[object, ...]], list[Finding]] = {}
     unique_without_match: list[Finding] = []
     for finding in findings:
         fingerprint = finding.fingerprint()
@@ -59,10 +91,13 @@ def deduplicate(findings: list[Finding]) -> list[Finding]:
             unique_without_match.append(finding)
             continue
         source_scope = _finding_source_scope(finding)
-        groups.setdefault((source_scope, finding.rule_id, fingerprint), []).append(finding)
+        groups.setdefault(
+            (source_scope, finding.rule_id, fingerprint, _report_metadata_key(finding)),
+            [],
+        ).append(finding)
 
     compacted: list[Finding] = []
-    for (_source_scope, _rule_id, fingerprint), group in groups.items():
+    for (_source_scope, _rule_id, fingerprint, _report_metadata), group in groups.items():
         representative = max(
             group,
             key=lambda item: (

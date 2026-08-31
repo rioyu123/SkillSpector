@@ -17,6 +17,10 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
+import pytest
+
 from skillspector.models import Finding
 from skillspector.nodes.deduplicate import deduplicate
 
@@ -80,6 +84,53 @@ class TestSameFileDedup:
         ]
         result = deduplicate(findings)
         assert len(result) == 2
+
+    @pytest.mark.parametrize(
+        ("field_name", "different_value"),
+        [
+            ("message", "Different message"),
+            ("severity", "MEDIUM"),
+            ("category", "Different category"),
+            ("pattern", "Different pattern"),
+            ("finding", "Different finding"),
+            ("explanation", "Different explanation"),
+            ("remediation", "Different remediation"),
+            ("code_snippet", "different snippet"),
+            ("context", "different context"),
+            ("intent", "different intent"),
+            ("tags", ["contextual-triage", "likely-benign-context"]),
+            ("evidence", {"classification": "different"}),
+        ],
+    )
+    def test_different_report_metadata_is_not_deduplicated(
+        self,
+        field_name: str,
+        different_value: object,
+    ) -> None:
+        first = _finding(file="a.py")
+        second = deepcopy(first)
+        second.file = "b.py"
+        setattr(second, field_name, different_value)
+
+        result = deduplicate([first, second])
+
+        assert len(result) == 2
+
+    def test_same_line_benign_and_unsafe_matches_keep_local_classification(self) -> None:
+        safe = _finding(rule_id="PE3", file="build.sh", matched_text="/etc/passwd")
+        safe.tags = ["Privilege Escalation", "contextual-triage", "likely-benign-context"]
+        safe.code_snippet = "docker run -v /etc/passwd:/etc/passwd:ro image"
+        unsafe = _finding(rule_id="PE3", file="build.sh", matched_text="/etc/passwd")
+        unsafe.tags = ["Privilege Escalation"]
+        unsafe.code_snippet = "cat /etc/passwd"
+
+        for findings in ([safe, unsafe], [unsafe, safe]):
+            result = deduplicate(findings)
+            assert len(result) == 2
+            assert {(tuple(item.tags), item.code_snippet) for item in result} == {
+                (tuple(safe.tags), safe.code_snippet),
+                (tuple(unsafe.tags), unsafe.code_snippet),
+            }
 
 
 class TestCrossFileDedup:
